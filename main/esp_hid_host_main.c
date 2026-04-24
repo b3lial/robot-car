@@ -88,65 +88,88 @@ static EventGroupHandle_t s_hid_event_group;
 #define HID_CONNECTED_BIT    BIT0
 #define HID_DISCONNECTED_BIT BIT1
 
-// --- Reconnect task ---
-static TaskHandle_t s_reconnect_task = NULL;
+#if CONFIG_BT_HID_HOST_ENABLED
+static const char *remote_device_name = CONFIG_EXAMPLE_PEER_DEVICE_NAME;
+#endif
 
 static void reconnect_task(void *pvParameters)
 {
     uint8_t peer_bda[6];
     esp_ble_addr_type_t peer_addr_type;
-    ESP_LOGI(TAG, "Reconnect task started");
-    for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        vTaskDelay(pdMS_TO_TICKS(6000));
 
-        // Attempt connection, retry until connected
+    // First-time pairing: scan until a HID device is found and its BDA saved
+    if (!load_peer(peer_bda, &peer_addr_type)) {
         for (;;) {
-            if (!load_peer(peer_bda, &peer_addr_type)) {
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                continue;
-            }
-
-            // Scan first — only connect once we see the device advertising.
-            // This ensures its GATT stack is fully up before we knock.
-            ESP_LOGI(TAG, "Scanning for known peer...");
             size_t results_len = 0;
             esp_hid_scan_result_t *results = NULL;
-            esp_hid_ble_scan(SCAN_DURATION_RECONNECT, peer_bda, &results_len, &results);
-            bool found = false;
-            esp_hid_scan_result_t *r = results;
-            while (r) {
-                if (memcmp(r->bda, peer_bda, 6) == 0) {
-                    found = true;
+            ESP_LOGI(TAG, "SCAN...");
+            esp_hid_scan(SCAN_DURATION_SECONDS, &results_len, &results);
+            ESP_LOGI(TAG, "SCAN: %u results", results_len);
+            if (results_len) {
+                esp_hid_scan_result_t *r = results;
+                esp_hid_scan_result_t *cr = NULL;
+                while (r) {
+#if CONFIG_BT_BLE_ENABLED
+                    if (r->transport == ESP_HID_TRANSPORT_BLE) {
+                        cr = r;
+                    }
+#endif
+#if CONFIG_BT_HID_HOST_ENABLED
+                    if (r->transport == ESP_HID_TRANSPORT_BT) {
+                        cr = r;
+                        if (r->name && strncmp(r->name, remote_device_name, strlen(remote_device_name)) == 0) {
+                            break;
+                        }
+                    }
+#endif
+                    r = r->next;
+                }
+#if CONFIG_BT_HID_HOST_ENABLED
+                if (cr && cr->name && strncmp(cr->name, remote_device_name, strlen(remote_device_name)) == 0) {
+#else
+                if (cr) {
+#endif
+                    save_peer(cr->bda, cr->ble.addr_type);
+                    memcpy(peer_bda, cr->bda, 6);
+                    peer_addr_type = cr->ble.addr_type;
+                    esp_hid_scan_results_free(results);
                     break;
                 }
-                r = r->next;
+                esp_hid_scan_results_free(results);
             }
-            esp_hid_scan_results_free(results);
+            ESP_LOGI(TAG, "Device not found, retrying...");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+    }
 
-            if (!found) {
-                ESP_LOGI(TAG, "Peer not advertising yet, scanning again...");
-                continue;
-            }
+    // Reconnect loop: connect directly without scanning.
+    // The HCI layer retries internally for ~30s and catches the advertising window on its own.
+    for (;;) {
+        xEventGroupClearBits(s_hid_event_group, HID_CONNECTED_BIT | HID_DISCONNECTED_BIT);
+        esp_ble_gattc_cache_clean(peer_bda);
+        ESP_LOGI(TAG, "Connecting...");
+        esp_hidh_dev_open(peer_bda, ESP_HID_TRANSPORT_BLE, peer_addr_type);
 
-            ESP_LOGI(TAG, "Peer found, connecting...");
-            esp_ble_gattc_cache_clean(peer_bda);
-            xEventGroupClearBits(s_hid_event_group, HID_CONNECTED_BIT | HID_DISCONNECTED_BIT);
-            esp_hidh_dev_open(peer_bda, ESP_HID_TRANSPORT_BLE, peer_addr_type);
-            // Wait for success or failure — 35s covers HCI timeout
-            EventBits_t bits = xEventGroupWaitBits(s_hid_event_group,
-                                                   HID_CONNECTED_BIT | HID_DISCONNECTED_BIT,
-                                                   pdFALSE, pdFALSE, pdMS_TO_TICKS(35000));
-            if (bits & HID_CONNECTED_BIT) {
-                ESP_LOGI(TAG, "Connected successfully, waiting for disconnect...");
-                xEventGroupWaitBits(s_hid_event_group, HID_DISCONNECTED_BIT,
-                                    pdFALSE, pdFALSE, portMAX_DELAY);
-                ESP_LOGI(TAG, "Disconnected, will retry...");
-            } else {
-                ESP_LOGW(TAG, "Connection failed, retrying...");
-            }
+        // Wait indefinitely for a definitive signal. Every failure path eventually sets
+        // HID_DISCONNECTED_BIT: GATT failure fires CLOSE_EVENT after ~40s; HCI timeout
+        // fires OPEN_EVENT with status!=OK which our callback converts to DISCONNECTED_BIT.
+        EventBits_t bits = xEventGroupWaitBits(s_hid_event_group,
+                                               HID_CONNECTED_BIT | HID_DISCONNECTED_BIT,
+                                               pdFALSE, pdFALSE,
+                                               portMAX_DELAY);
+
+        if (bits & HID_CONNECTED_BIT) {
+            // OPEN_EVENT fired with status==OK: GATT succeeded, genuine connection.
+            ESP_LOGI(TAG, "Connected! Waiting for disconnect...");
+            xEventGroupWaitBits(s_hid_event_group, HID_DISCONNECTED_BIT,
+                                pdFALSE, pdFALSE, portMAX_DELAY);
+            ESP_LOGI(TAG, "Disconnected, retrying in 3s...");
             vTaskDelay(pdMS_TO_TICKS(3000));
-            // continue inner retry loop
+        } else {
+            // DISCONNECTED_BIT set without CONNECTED_BIT: GATT failure (CLOSE after ~40s)
+            // or HCI timeout. Retry quickly to catch the next advertising window.
+            ESP_LOGW(TAG, "Connection failed, retrying...");
+            vTaskDelay(pdMS_TO_TICKS(500));
         }
     }
 }
@@ -207,10 +230,6 @@ static void handle_gamepad_input(const uint8_t *data, uint16_t len)
     }
 }
 
-#if CONFIG_BT_HID_HOST_ENABLED
-static const char * remote_device_name = CONFIG_EXAMPLE_PEER_DEVICE_NAME;
-#endif // CONFIG_BT_HID_HOST_ENABLED
-
 #if !CONFIG_BT_NIMBLE_ENABLED
 static char *bda2str(uint8_t *bda, char *str, size_t size)
 {
@@ -241,7 +260,7 @@ void hidh_callback(void *handler_args, esp_event_base_t base, int32_t id, void *
             xEventGroupSetBits(s_hid_event_group, HID_CONNECTED_BIT);
         } else {
             ESP_LOGE(TAG, "OPEN failed!");
-            xEventGroupClearBits(s_hid_event_group, HID_CONNECTED_BIT);
+            xEventGroupSetBits(s_hid_event_group, HID_DISCONNECTED_BIT);
         }
         break;
     }
@@ -285,82 +304,6 @@ void hidh_callback(void *handler_args, esp_event_base_t base, int32_t id, void *
     default:
         ESP_LOGI(TAG, "EVENT: %d", event);
         break;
-    }
-}
-
-void hid_demo_task(void *pvParameters)
-{
-    // If we have a stored peer address, hand off to reconnect_task directly
-    uint8_t peer_bda[6];
-    esp_ble_addr_type_t peer_addr_type;
-    if (load_peer(peer_bda, &peer_addr_type)) {
-        ESP_LOGI(TAG, "Known peer found in NVS, connecting directly...");
-        xTaskNotifyGive(s_reconnect_task);
-        vTaskDelete(NULL);
-        return;
-    }
-
-    for (;;) {
-        size_t results_len = 0;
-        esp_hid_scan_result_t *results = NULL;
-        ESP_LOGI(TAG, "SCAN...");
-        esp_hid_scan(SCAN_DURATION_SECONDS, &results_len, &results);
-        ESP_LOGI(TAG, "SCAN: %u results", results_len);
-        if (results_len) {
-            esp_hid_scan_result_t *r = results;
-            esp_hid_scan_result_t *cr = NULL;
-            while (r) {
-                printf("  %s: " ESP_BD_ADDR_STR ", ", (r->transport == ESP_HID_TRANSPORT_BLE) ? "BLE" : "BT ", ESP_BD_ADDR_HEX(r->bda));
-                printf("RSSI: %d, ", r->rssi);
-                printf("USAGE: %s, ", esp_hid_usage_str(r->usage));
-#if CONFIG_BT_BLE_ENABLED
-                if (r->transport == ESP_HID_TRANSPORT_BLE) {
-                    cr = r;
-                    printf("APPEARANCE: 0x%04x, ", r->ble.appearance);
-                    printf("ADDR_TYPE: '%s', ", ble_addr_type_str(r->ble.addr_type));
-                }
-#endif /* CONFIG_BT_BLE_ENABLED */
-#if CONFIG_BT_NIMBLE_ENABLED
-                if (r->transport == ESP_HID_TRANSPORT_BLE) {
-                    cr = r;
-                    printf("APPEARANCE: 0x%04x, ", r->ble.appearance);
-                    printf("ADDR_TYPE: '%d', ", r->ble.addr_type);
-                }
-#endif /* CONFIG_BT_BLE_ENABLED */
-#if CONFIG_BT_HID_HOST_ENABLED
-                if (r->transport == ESP_HID_TRANSPORT_BT) {
-                    cr = r;
-                    printf("COD: %s[", esp_hid_cod_major_str(r->bt.cod.major));
-                    esp_hid_cod_minor_print(r->bt.cod.minor, stdout);
-                    printf("] srv 0x%03x, ", r->bt.cod.service);
-                    print_uuid(&r->bt.uuid);
-                    printf(", ");
-                    if (r->name && strncmp(r->name, remote_device_name, strlen(remote_device_name)) == 0) {
-                        break;
-                    }
-                }
-#endif /* CONFIG_BT_HID_HOST_ENABLED */
-                printf("NAME: %s ", r->name ? r->name : "");
-                printf("\n");
-                r = r->next;
-            }
-
-#if CONFIG_BT_HID_HOST_ENABLED
-            if (cr && cr->name && strncmp(cr->name, remote_device_name, strlen(remote_device_name)) == 0) {
-                save_peer(cr->bda, cr->ble.addr_type);
-                esp_hidh_dev_open(cr->bda, cr->transport, cr->ble.addr_type);
-            }
-#else
-            if (cr) {
-                save_peer(cr->bda, cr->ble.addr_type);
-                esp_hidh_dev_open(cr->bda, cr->transport, cr->ble.addr_type);
-            }
-#endif // CONFIG_BT_HID_HOST_ENABLED
-            esp_hid_scan_results_free(results);
-            vTaskDelete(NULL);
-        }
-        ESP_LOGI(TAG, "Device not found, retrying...");
-        vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }
 
@@ -441,6 +384,5 @@ void app_main(void)
 #endif
     motors_init();
     s_hid_event_group = xEventGroupCreate();
-    xTaskCreate(reconnect_task, "reconnect_task", 4 * 1024, NULL, 2, &s_reconnect_task);
-    xTaskCreate(&hid_demo_task, "hid_task", 6 * 1024, NULL, 2, NULL);
+    xTaskCreate(reconnect_task, "reconnect_task", 6 * 1024, NULL, 2, NULL);
 }

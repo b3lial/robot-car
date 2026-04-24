@@ -120,27 +120,28 @@ NVS namespace: "hidh"
 
 ## Connection and reconnect architecture
 
-Two FreeRTOS tasks run at startup:
+A single **`reconnect_task`** runs for the lifetime of the application.
 
-**`hid_task`** (runs once)
-- If a peer address exists in NVS: notifies `reconnect_task` and exits.
-- If no peer in NVS: loops with a full BLE+BT scan (5s) until a matching device is found by name, saves the BDA, and exits.
+**First-time pairing** (no BDA in NVS):
+- Loops with a full BLE+BT scan (5s) until a HID device is found, saves the BDA to NVS, then falls through to the reconnect loop.
 
-**`reconnect_task`** (runs forever)
-- Woken by task notification on boot or first-time pair.
-- Inner retry loop:
-  1. Runs a fast BLE-only scan (2s max) using `esp_hid_ble_scan()` with early-stop on the known BDA — scan stops the instant the controller's advertisement is seen.
-  2. Calls `esp_ble_gattc_cache_clean()` then `esp_hidh_dev_open()` immediately.
-  3. Waits up to 35s for `HID_CONNECTED_BIT` or `HID_DISCONNECTED_BIT`.
-  4. On success: waits indefinitely for disconnect, then retries after 3s.
-  5. On failure or timeout: retries after 3s.
+**Reconnect loop** (BDA known):
+- Calls `esp_ble_gattc_cache_clean()` then `esp_hidh_dev_open()` directly — no scan.
+- The HCI layer retries the connection request internally for ~30s, catching the controller's advertising window on its own.
+- Waits indefinitely for `HID_CONNECTED_BIT` or `HID_DISCONNECTED_BIT`.
+- On `HID_CONNECTED_BIT` (GATT succeeded): waits for disconnect, then retries after 3s.
+- On `HID_DISCONNECTED_BIT` without `HID_CONNECTED_BIT` (GATT or HCI failure): retries after 500ms.
 
 **Event group bits** (set by `hidh_callback`):
 
 | Bit | Set when |
 |-----|----------|
-| `HID_CONNECTED_BIT` | `ESP_HIDH_OPEN_EVENT` with `status == ESP_OK` |
-| `HID_DISCONNECTED_BIT` | `ESP_HIDH_CLOSE_EVENT` (any reason) |
+| `HID_CONNECTED_BIT` | `ESP_HIDH_OPEN_EVENT` with `status == ESP_OK` (GATT succeeded) |
+| `HID_DISCONNECTED_BIT` | `ESP_HIDH_CLOSE_EVENT` (any reason) or `ESP_HIDH_OPEN_EVENT` with `status != ESP_OK` |
+
+**Why no scan on reconnect:** scanning is only needed when the BDA is unknown. Once it is known, `esp_hidh_dev_open()` can be called immediately; HCI handles the retry window internally. Scanning before connecting adds latency without providing any useful information.
+
+**GATT failure behaviour:** Bluedroid's `gatt_rsp_timeout` fires ~40s after HCI connects if service discovery does not complete. This sets `HID_DISCONNECTED_BIT` via `CLOSE_EVENT` without ever setting `HID_CONNECTED_BIT`. The 500ms retry gives the controller's GATT server time to finish initialising before the next attempt.
 
 ---
 
@@ -148,8 +149,6 @@ Two FreeRTOS tasks run at startup:
 
 | Constant | Value | Purpose |
 |---|---|---|
-| `SCAN_DURATION_SECONDS` | 5s | First-time pairing scan |
-| `SCAN_DURATION_RECONNECT` | 2s | Max scan time on reconnect (usually exits early) |
-| Initial reconnect delay | 6s | Gives the controller BLE stack time to start |
-| Retry delay | 3s | Cooldown between failed connection attempts |
-| Connection timeout | 35s | Covers HCI-level failure (~30s); GATT failures fire CLOSE early |
+| `SCAN_DURATION_SECONDS` | 5s | First-time pairing scan only |
+| Retry delay — connected | 3s | Controller was in use then powered off |
+| Retry delay — failed | 500ms | GATT or HCI failure; retry quickly |
