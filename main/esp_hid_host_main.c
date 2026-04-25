@@ -176,40 +176,73 @@ static void reconnect_task(void *pvParameters)
 
 // --- Motor control ---
 
-#include "driver/gpio.h"
+#include "driver/ledc.h"
 
 #define MOTOR1_PIN_A  GPIO_NUM_12
 #define MOTOR1_PIN_B  GPIO_NUM_14
 #define MOTOR2_PIN_A  GPIO_NUM_27
 #define MOTOR2_PIN_B  GPIO_NUM_26
 
-static void set_motors(int m1a, int m1b, int m2a, int m2b)
+#define LEDC_TIMER      LEDC_TIMER_0
+#define LEDC_MODE       LEDC_LOW_SPEED_MODE
+#define LEDC_DUTY_RES   LEDC_TIMER_10_BIT   // duty range 0–1023
+#define LEDC_FREQ_HZ    1000
+
+#define LEDC_CH_M1A     LEDC_CHANNEL_0
+#define LEDC_CH_M1B     LEDC_CHANNEL_1
+#define LEDC_CH_M2A     LEDC_CHANNEL_2
+#define LEDC_CH_M2B     LEDC_CHANNEL_3
+
+static void ledc_set(ledc_channel_t ch, uint32_t duty)
 {
-    gpio_set_level(MOTOR1_PIN_A, m1a);
-    gpio_set_level(MOTOR1_PIN_B, m1b);
-    gpio_set_level(MOTOR2_PIN_A, m2a);
-    gpio_set_level(MOTOR2_PIN_B, m2b);
+    ledc_set_duty(LEDC_MODE, ch, duty);
+    ledc_update_duty(LEDC_MODE, ch);
+}
+
+// speed: 0–100 (percent). Returns the corresponding LEDC duty value.
+static uint32_t speed_to_duty(uint8_t speed)
+{
+    uint32_t max = (1u << LEDC_DUTY_RES) - 1;
+    if (speed >= 100) return max;
+    return (uint32_t)speed * max / 100;
+}
+
+static void set_motors(int m1a, int m1b, int m2a, int m2b, uint8_t speed)
+{
+    uint32_t duty = speed_to_duty(speed);
+    ledc_set(LEDC_CH_M1A, m1a ? duty : 0);
+    ledc_set(LEDC_CH_M1B, m1b ? duty : 0);
+    ledc_set(LEDC_CH_M2A, m2a ? duty : 0);
+    ledc_set(LEDC_CH_M2B, m2b ? duty : 0);
 }
 
 static void motors_init(void)
 {
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << MOTOR1_PIN_A) | (1ULL << MOTOR1_PIN_B) |
-                        (1ULL << MOTOR2_PIN_A) | (1ULL << MOTOR2_PIN_B),
-        .mode         = GPIO_MODE_OUTPUT,
-        .pull_up_en   = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE,
+    ledc_timer_config_t timer = {
+        .speed_mode      = LEDC_MODE,
+        .duty_resolution = LEDC_DUTY_RES,
+        .timer_num       = LEDC_TIMER,
+        .freq_hz         = LEDC_FREQ_HZ,
+        .clk_cfg         = LEDC_AUTO_CLK,
     };
-    gpio_config(&io_conf);
-    set_motors(0, 0, 0, 0);
+    ledc_timer_config(&timer);
+
+    ledc_channel_config_t channels[4] = {
+        { .channel = LEDC_CH_M1A, .gpio_num = MOTOR1_PIN_A, .speed_mode = LEDC_MODE, .timer_sel = LEDC_TIMER, .duty = 0, .hpoint = 0, .intr_type = LEDC_INTR_DISABLE },
+        { .channel = LEDC_CH_M1B, .gpio_num = MOTOR1_PIN_B, .speed_mode = LEDC_MODE, .timer_sel = LEDC_TIMER, .duty = 0, .hpoint = 0, .intr_type = LEDC_INTR_DISABLE },
+        { .channel = LEDC_CH_M2A, .gpio_num = MOTOR2_PIN_A, .speed_mode = LEDC_MODE, .timer_sel = LEDC_TIMER, .duty = 0, .hpoint = 0, .intr_type = LEDC_INTR_DISABLE },
+        { .channel = LEDC_CH_M2B, .gpio_num = MOTOR2_PIN_B, .speed_mode = LEDC_MODE, .timer_sel = LEDC_TIMER, .duty = 0, .hpoint = 0, .intr_type = LEDC_INTR_DISABLE },
+    };
+    for (int i = 0; i < 4; i++) {
+        ledc_channel_config(&channels[i]);
+    }
 }
 
-static void moveForward(void)  { printf("CAR: FORWARD\n");  set_motors(0, 1, 0, 1); }
-static void moveBackward(void) { printf("CAR: BACKWARD\n"); set_motors(1, 0, 1, 0); }
-static void moveLeft(void)     { printf("CAR: LEFT\n");     set_motors(1, 0, 0, 1); }
-static void moveRight(void)    { printf("CAR: RIGHT\n");    set_motors(0, 1, 1, 0); }
-static void stop(void)         { printf("CAR: STOP\n");     set_motors(0, 0, 0, 0); }
+static void moveForward(uint8_t speed)  { printf("CAR: FORWARD\n");  set_motors(0, 1, 0, 1, speed); }
+static void moveBackward(uint8_t speed) { printf("CAR: BACKWARD\n"); set_motors(1, 0, 1, 0, speed); }
+static void moveLeft(uint8_t speed)     { printf("CAR: LEFT\n");     set_motors(1, 0, 0, 1, speed); }
+static void moveRight(uint8_t speed)    { printf("CAR: RIGHT\n");    set_motors(0, 1, 1, 0, speed); }
+static void stop(void)                  { printf("CAR: STOP\n");     set_motors(0, 0, 0, 0, 0); }
 
 #define DPAD_UP     0x00
 #define DPAD_RIGHT  0x02
@@ -221,10 +254,10 @@ static void handle_gamepad_input(const uint8_t *data, uint16_t len)
 {
     if (len < 1) return;
     switch (data[0] & 0x0F) {
-        case DPAD_UP:      moveForward();  break;
-        case DPAD_DOWN:    moveBackward(); break;
-        case DPAD_LEFT:    moveLeft();     break;
-        case DPAD_RIGHT:   moveRight();    break;
+        case DPAD_UP:      moveForward(100);  break;
+        case DPAD_DOWN:    moveBackward(100); break;
+        case DPAD_LEFT:    moveLeft(50);     break;
+        case DPAD_RIGHT:   moveRight(50);    break;
         case DPAD_NEUTRAL: stop();         break;
         default: break;
     }
