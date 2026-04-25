@@ -9,6 +9,12 @@ Based on the ESP-IDF `esp_hid_host` example, extended with Stadia-specific BLE f
 
 ---
 
+## Car
+
+![Car with ESP32 and motors](img/car_open.jpg)
+
+---
+
 ## Hardware
 
 - ESP32 development board
