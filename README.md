@@ -5,7 +5,7 @@
 
 An ESP32 acting as a BLE HID host that connects to a Google Stadia controller and drives a miniature electric car via D-pad input.
 
-Based on the ESP-IDF `esp_hid_host` example, extended with Stadia-specific BLE fixes, persistent pairing, automatic reconnection, and GPIO motor control.
+Based on the ESP-IDF `esp_hid_host` example, extended with Stadia-specific BLE fixes, persistent pairing, automatic reconnection, and PWM motor control.
 
 ---
 
@@ -21,12 +21,14 @@ Based on the ESP-IDF `esp_hid_host` example, extended with Stadia-specific BLE f
 - Google Stadia controller (post-2022 BLE firmware)
 - Dual H-bridge motor driver wired to:
 
-| Signal | GPIO |
-|--------|------|
-| Motor 1 A | 12 |
-| Motor 1 B | 14 |
-| Motor 2 A | 27 |
-| Motor 2 B | 26 |
+| Signal | GPIO | LEDC channel |
+|--------|------|--------------|
+| Motor 1 A | 12 | 0 |
+| Motor 1 B | 14 | 1 |
+| Motor 2 A | 27 | 2 |
+| Motor 2 B | 26 | 3 |
+
+Motor speed is controlled via PWM (LEDC, 10-bit resolution, 1 kHz). For each direction, one pin of each motor pair is driven at the target duty cycle and the other is held low.
 
 ---
 
@@ -54,13 +56,13 @@ To force re-pairing, erase NVS: `idf.py erase-flash` (note: this also clears BLE
 
 D-pad maps directly to car movement:
 
-| D-pad | Action |
-|-------|--------|
-| Up | Forward |
-| Down | Backward |
-| Left | Left |
-| Right | Right |
-| Neutral | Stop |
+| D-pad | Action | Speed |
+|-------|--------|-------|
+| Up | Forward | 100% |
+| Down | Backward | 100% |
+| Left | Turn left | 50% |
+| Right | Turn right | 50% |
+| Neutral | Stop | — |
 
 The car also stops immediately when the controller disconnects or powers off.
 
