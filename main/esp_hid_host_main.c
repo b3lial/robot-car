@@ -176,6 +176,7 @@ static void reconnect_task(void *pvParameters)
 
 // --- Motor control ---
 
+#include "hal/gpio_types.h"
 #include "driver/ledc.h"
 
 #define MOTOR1_PIN_A  GPIO_NUM_12
@@ -228,10 +229,10 @@ static void motors_init(void)
     ledc_timer_config(&timer);
 
     ledc_channel_config_t channels[4] = {
-        { .channel = LEDC_CH_M1A, .gpio_num = MOTOR1_PIN_A, .speed_mode = LEDC_MODE, .timer_sel = LEDC_TIMER, .duty = 0, .hpoint = 0, .intr_type = LEDC_INTR_DISABLE },
-        { .channel = LEDC_CH_M1B, .gpio_num = MOTOR1_PIN_B, .speed_mode = LEDC_MODE, .timer_sel = LEDC_TIMER, .duty = 0, .hpoint = 0, .intr_type = LEDC_INTR_DISABLE },
-        { .channel = LEDC_CH_M2A, .gpio_num = MOTOR2_PIN_A, .speed_mode = LEDC_MODE, .timer_sel = LEDC_TIMER, .duty = 0, .hpoint = 0, .intr_type = LEDC_INTR_DISABLE },
-        { .channel = LEDC_CH_M2B, .gpio_num = MOTOR2_PIN_B, .speed_mode = LEDC_MODE, .timer_sel = LEDC_TIMER, .duty = 0, .hpoint = 0, .intr_type = LEDC_INTR_DISABLE },
+        { .channel = LEDC_CH_M1A, .gpio_num = MOTOR1_PIN_A, .speed_mode = LEDC_MODE, .timer_sel = LEDC_TIMER, .duty = 0, .hpoint = 0 },
+        { .channel = LEDC_CH_M1B, .gpio_num = MOTOR1_PIN_B, .speed_mode = LEDC_MODE, .timer_sel = LEDC_TIMER, .duty = 0, .hpoint = 0 },
+        { .channel = LEDC_CH_M2A, .gpio_num = MOTOR2_PIN_A, .speed_mode = LEDC_MODE, .timer_sel = LEDC_TIMER, .duty = 0, .hpoint = 0 },
+        { .channel = LEDC_CH_M2B, .gpio_num = MOTOR2_PIN_B, .speed_mode = LEDC_MODE, .timer_sel = LEDC_TIMER, .duty = 0, .hpoint = 0 },
     };
     for (int i = 0; i < 4; i++) {
         ledc_channel_config(&channels[i]);
@@ -244,21 +245,62 @@ static void moveLeft(uint8_t speed)     { printf("CAR: LEFT\n");     set_motors(
 static void moveRight(uint8_t speed)    { printf("CAR: RIGHT\n");    set_motors(0, 1, 1, 0, speed); }
 static void stop(void)                  { printf("CAR: STOP\n");     set_motors(0, 0, 0, 0, 0); }
 
-#define DPAD_UP     0x00
-#define DPAD_RIGHT  0x02
-#define DPAD_DOWN   0x04
-#define DPAD_LEFT   0x06
-#define DPAD_NEUTRAL 0x08
+#define DPAD_UP         0x00
+#define DPAD_UP_RIGHT   0x01
+#define DPAD_RIGHT      0x02
+#define DPAD_DOWN_RIGHT 0x03
+#define DPAD_DOWN       0x04
+#define DPAD_DOWN_LEFT  0x05
+#define DPAD_LEFT       0x06
+#define DPAD_UP_LEFT    0x07
+#define DPAD_NEUTRAL    0x08
+
+// Diagonal helpers: one side at full speed, the other at half.
+static void moveForwardLeft(void) {
+    printf("CAR: FORWARD-LEFT\n");
+    ledc_set(LEDC_CH_M1A, 0);                     // left:  50% forward
+    ledc_set(LEDC_CH_M1B, speed_to_duty(40));
+    ledc_set(LEDC_CH_M2A, 0);                     // right: 100% forward
+    ledc_set(LEDC_CH_M2B, speed_to_duty(100));
+}
+
+static void moveForwardRight(void) {
+    printf("CAR: FORWARD-RIGHT\n");
+    ledc_set(LEDC_CH_M1A, 0);                     // left:  100% forward
+    ledc_set(LEDC_CH_M1B, speed_to_duty(100));
+    ledc_set(LEDC_CH_M2A, 0);                     // right: 50% forward
+    ledc_set(LEDC_CH_M2B, speed_to_duty(40));
+}
+
+static void moveBackwardLeft(void) {
+    printf("CAR: BACKWARD-LEFT\n");
+    ledc_set(LEDC_CH_M1A, speed_to_duty(40));     // left:  50% backward
+    ledc_set(LEDC_CH_M1B, 0);
+    ledc_set(LEDC_CH_M2A, speed_to_duty(100));    // right: 100% backward
+    ledc_set(LEDC_CH_M2B, 0);
+}
+
+static void moveBackwardRight(void) {
+    printf("CAR: BACKWARD-RIGHT\n");
+    ledc_set(LEDC_CH_M1A, speed_to_duty(100));    // left:  100% backward
+    ledc_set(LEDC_CH_M1B, 0);
+    ledc_set(LEDC_CH_M2A, speed_to_duty(40));     // right: 50% backward
+    ledc_set(LEDC_CH_M2B, 0);
+}
 
 static void handle_gamepad_input(const uint8_t *data, uint16_t len)
 {
     if (len < 1) return;
     switch (data[0] & 0x0F) {
-        case DPAD_UP:      moveForward(100);  break;
-        case DPAD_DOWN:    moveBackward(100); break;
-        case DPAD_LEFT:    moveLeft(50);     break;
-        case DPAD_RIGHT:   moveRight(50);    break;
-        case DPAD_NEUTRAL: stop();         break;
+        case DPAD_UP:           moveForward(100);       break;
+        case DPAD_UP_LEFT:      moveForwardLeft();      break;
+        case DPAD_UP_RIGHT:     moveForwardRight();     break;
+        case DPAD_DOWN:         moveBackward(100);      break;
+        case DPAD_DOWN_LEFT:    moveBackwardLeft();     break;
+        case DPAD_DOWN_RIGHT:   moveBackwardRight();    break;
+        case DPAD_LEFT:         moveLeft(100);           break;
+        case DPAD_RIGHT:        moveRight(100);          break;
+        case DPAD_NEUTRAL:      stop();                 break;
         default: break;
     }
 }
