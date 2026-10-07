@@ -28,7 +28,7 @@ Based on the ESP-IDF `esp_hid_host` example, extended with Stadia-specific BLE f
 | Motor 2 A | 27 | 2 |
 | Motor 2 B | 26 | 3 |
 
-Motor speed is controlled via PWM (LEDC, 10-bit resolution, 1 kHz). For each direction, one pin of each motor pair is driven at the target duty cycle and the other is held low.
+All four motors are wired in parallel to the battery. Motor speed is controlled via PWM (LEDC, 10-bit resolution, 1 kHz), capped at 80% duty to reduce wear. For each direction, one pin of each motor pair is driven at the target duty cycle and the other is held low.
 
 ---
 
@@ -58,10 +58,14 @@ D-pad maps directly to car movement:
 
 | D-pad | Action | Speed |
 |-------|--------|-------|
-| Up | Forward | 100% |
-| Down | Backward | 100% |
-| Left | Turn left | 50% |
-| Right | Turn right | 50% |
+| Up | Forward | 80% |
+| Down | Backward | 80% |
+| Left | Turn left (in-place) | 80% |
+| Right | Turn right (in-place) | 80% |
+| Up-Left | Curve forward-left | 40% / 80% |
+| Up-Right | Curve forward-right | 80% / 40% |
+| Down-Left | Curve backward-left | 40% / 80% |
+| Down-Right | Curve backward-right | 80% / 40% |
 | Neutral | Stop | — |
 
 The car also stops immediately when the controller disconnects or powers off.

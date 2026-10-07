@@ -243,6 +243,8 @@ static void moveForward(uint8_t speed)  { printf("CAR: FORWARD\n");  set_motors(
 static void moveBackward(uint8_t speed) { printf("CAR: BACKWARD\n"); set_motors(1, 0, 1, 0, speed); }
 static void moveLeft(uint8_t speed)     { printf("CAR: LEFT\n");     set_motors(1, 0, 0, 1, speed); }
 static void moveRight(uint8_t speed)    { printf("CAR: RIGHT\n");    set_motors(0, 1, 1, 0, speed); }
+
+#define SPEED_FULL 80
 static void stop(void)                  { printf("CAR: STOP\n");     set_motors(0, 0, 0, 0, 0); }
 
 #define DPAD_UP         0x00
@@ -258,33 +260,33 @@ static void stop(void)                  { printf("CAR: STOP\n");     set_motors(
 // Diagonal helpers: one side at full speed, the other at half.
 static void moveForwardLeft(void) {
     printf("CAR: FORWARD-LEFT\n");
-    ledc_set(LEDC_CH_M1A, 0);                     // left:  50% forward
+    ledc_set(LEDC_CH_M1A, 0);                          // left:  slow forward
     ledc_set(LEDC_CH_M1B, speed_to_duty(40));
-    ledc_set(LEDC_CH_M2A, 0);                     // right: 100% forward
-    ledc_set(LEDC_CH_M2B, speed_to_duty(100));
+    ledc_set(LEDC_CH_M2A, 0);                          // right: full forward
+    ledc_set(LEDC_CH_M2B, speed_to_duty(SPEED_FULL));
 }
 
 static void moveForwardRight(void) {
     printf("CAR: FORWARD-RIGHT\n");
-    ledc_set(LEDC_CH_M1A, 0);                     // left:  100% forward
-    ledc_set(LEDC_CH_M1B, speed_to_duty(100));
-    ledc_set(LEDC_CH_M2A, 0);                     // right: 50% forward
+    ledc_set(LEDC_CH_M1A, 0);                          // left:  full forward
+    ledc_set(LEDC_CH_M1B, speed_to_duty(SPEED_FULL));
+    ledc_set(LEDC_CH_M2A, 0);                          // right: slow forward
     ledc_set(LEDC_CH_M2B, speed_to_duty(40));
 }
 
 static void moveBackwardLeft(void) {
     printf("CAR: BACKWARD-LEFT\n");
-    ledc_set(LEDC_CH_M1A, speed_to_duty(40));     // left:  50% backward
+    ledc_set(LEDC_CH_M1A, speed_to_duty(40));          // left:  slow backward
     ledc_set(LEDC_CH_M1B, 0);
-    ledc_set(LEDC_CH_M2A, speed_to_duty(100));    // right: 100% backward
+    ledc_set(LEDC_CH_M2A, speed_to_duty(SPEED_FULL));  // right: full backward
     ledc_set(LEDC_CH_M2B, 0);
 }
 
 static void moveBackwardRight(void) {
     printf("CAR: BACKWARD-RIGHT\n");
-    ledc_set(LEDC_CH_M1A, speed_to_duty(100));    // left:  100% backward
+    ledc_set(LEDC_CH_M1A, speed_to_duty(SPEED_FULL));  // left:  full backward
     ledc_set(LEDC_CH_M1B, 0);
-    ledc_set(LEDC_CH_M2A, speed_to_duty(40));     // right: 50% backward
+    ledc_set(LEDC_CH_M2A, speed_to_duty(40));          // right: slow backward
     ledc_set(LEDC_CH_M2B, 0);
 }
 
@@ -292,14 +294,14 @@ static void handle_gamepad_input(const uint8_t *data, uint16_t len)
 {
     if (len < 1) return;
     switch (data[0] & 0x0F) {
-        case DPAD_UP:           moveForward(100);       break;
+        case DPAD_UP:           moveForward(SPEED_FULL);       break;
         case DPAD_UP_LEFT:      moveForwardLeft();      break;
         case DPAD_UP_RIGHT:     moveForwardRight();     break;
-        case DPAD_DOWN:         moveBackward(100);      break;
+        case DPAD_DOWN:         moveBackward(SPEED_FULL);      break;
         case DPAD_DOWN_LEFT:    moveBackwardLeft();     break;
         case DPAD_DOWN_RIGHT:   moveBackwardRight();    break;
-        case DPAD_LEFT:         moveLeft(100);           break;
-        case DPAD_RIGHT:        moveRight(100);          break;
+        case DPAD_LEFT:         moveLeft(SPEED_FULL);          break;
+        case DPAD_RIGHT:        moveRight(SPEED_FULL);         break;
         case DPAD_NEUTRAL:      stop();                 break;
         default: break;
     }
