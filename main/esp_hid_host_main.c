@@ -146,9 +146,13 @@ static void reconnect_task(void *pvParameters)
     // The HCI layer retries internally for ~30s and catches the advertising window on its own.
     for (;;) {
         xEventGroupClearBits(s_hid_event_group, HID_CONNECTED_BIT | HID_DISCONNECTED_BIT);
-        esp_ble_gattc_cache_clean(peer_bda);
         ESP_LOGI(TAG, "Connecting...");
-        esp_hidh_dev_open(peer_bda, ESP_HID_TRANSPORT_BLE, peer_addr_type);
+        esp_hidh_dev_t *dev = esp_hidh_dev_open(peer_bda, ESP_HID_TRANSPORT_BLE, peer_addr_type);
+        if (dev == NULL) {
+            ESP_LOGW(TAG, "dev_open returned NULL, retrying...");
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
 
         // Wait indefinitely for a definitive signal. Every failure path eventually sets
         // HID_DISCONNECTED_BIT: GATT failure fires CLOSE_EVENT after ~40s; HCI timeout
